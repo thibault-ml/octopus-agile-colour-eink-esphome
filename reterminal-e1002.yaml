@@ -764,8 +764,8 @@ display:
       it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
       it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, ">50p");
 
-      // STEP 7: Show current time in top left
-      it.printf(10, 18, id(neuebit_regular_xlarge), COLOR_TEXT, TextAlign::BASELINE, "%02d:%02d", current_hour, current_minute);
+      // STEP 7: Show time of last update in top left
+      it.printf(10, 18, id(neuebit_regular_xlarge), COLOR_TEXT, TextAlign::BASELINE, "Last updated @ %02d:%02d", current_hour, current_minute);
 
       // Step 8: show multiple rectangles
       // draw_bar(10, 25, 15, 30, BAR_COLOR_BLACK);
