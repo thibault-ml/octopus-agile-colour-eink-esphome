@@ -1,0 +1,778 @@
+esphome:
+  name: reterminal-e1002
+  friendly_name: reTerminal_E1002
+  libraries:
+    - "bblanchon/ArduinoJson"
+  on_boot:
+    - priority: 600
+      then:
+        - output.turn_on: bsp_battery_enable
+        - delay: 200ms
+        - component.update: battery_voltage
+        - component.update: battery_percent
+    - priority: -100  # Run after everything else is initialized
+      then:
+        - logger.log: "[on_boot] Boot finished. Will sleep in 1 minutes"
+        - delay: 1min
+        - script.execute: enter_deep_sleep_until_next_wakeup
+
+esp32:
+  board: esp32-s3-devkitc-1
+  framework:
+    type: esp-idf
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+# Enable logging
+logger:
+
+# Enable JSON
+json:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_encryption_key
+  on_client_connected:
+    - logger.log:
+        level: info
+        format: "[api] Client %s connected to API with IP %s"
+        args: ["client_info.c_str()", "client_address.c_str()"]
+    - delay: 2s
+    - lambda: |-
+        float current_rate = id(octopus_current_rate).state;
+        float last_rate = id(last_current_rate);
+        std::string current_rates = id(octopus_rates).state;
+        size_t current_hash = std::hash<std::string>{}(current_rates);
+        size_t last_hash = id(last_rates_json_hash);
+
+        const float epsilon = 0.00001;
+        if (std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash) {
+          if (std::abs(current_rate - last_rate) > epsilon) {
+            ESP_LOGD("api", "--> Current rate data changed");
+            ESP_LOGD("api", "last rate: %.4f", last_rate);
+            ESP_LOGD("api", " new rate: %.4f", current_rate);
+          }
+          if (current_hash != last_hash) {
+            ESP_LOGD("api", "--> rates json changed");
+            ESP_LOGD("api", "last hash: %zu", last_hash);
+            ESP_LOGD("api", " new hash: %zu", current_hash);
+          }
+          ESP_LOGI("api", "Sensor data has changed, updating display");
+          id(last_current_rate) = current_rate;
+          id(last_rates_json_hash) = current_hash;
+          id(epaper_display).update();
+        } else {
+          ESP_LOGI("api", "Sensor data unchanged, skipping display update");
+        }
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO9
+
+
+globals:
+  - id: prevent_deep_sleep
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+  - id: last_current_rate
+    type: float
+    restore_value: yes
+    initial_value: '0.0'
+  - id: last_rates_json_hash
+    type: size_t
+    restore_value: yes
+    initial_value: '0'
+
+deep_sleep:
+  id: deep_sleep_config
+  esp32_ext1_wakeup:
+    pins: [4]
+    mode: ANY_LOW
+  # wakeup_pin_mode: INVERT_WAKEUP
+  # wakeup_pin: GPIO4
+  # wakeup_pin:
+  #   number: GPIO4
+  #   inverted: true
+  #   mode: INPUT_PULLUP
+
+
+output:
+  - platform: gpio
+    pin: GPIO21
+    id: bsp_battery_enable
+
+
+font:
+  - file: "fonts/Roboto-Regular.ttf"
+    id: font_small
+    size: 12
+  - file: "fonts/Roboto-Regular.ttf"
+    id: font_regular
+    size: 16
+  - file: "fonts/Roboto-Regular.ttf"
+    id: font_medium
+    size: 20
+  - file: "fonts/Roboto-Bold.ttf"
+    id: font_large
+    size: 22
+
+  - file: "fonts/PPNeueBit-Regular.ttf"
+    id: neuebit_regular_small
+    size: 12
+  - file: "fonts/PPNeueBit-Regular.ttf"
+    id: neuebit_regular_regular
+    size: 16
+  - file: "fonts/PPNeueBit-Regular.ttf"
+    id: neuebit_regular_medium
+    size: 20
+  - file: "fonts/PPNeueBit-Regular.ttf"
+    id: neuebit_regular_large
+    size: 22
+  - file: "fonts/PPNeueBit-Regular.ttf"
+    id: neuebit_regular_xlarge
+    size: 26
+
+  - file: "fonts/PPNeueBit-Bold.otf"
+    id: neuebit_bold_small
+    size: 12
+  - file: "fonts/PPNeueBit-Bold.otf"
+    id: neuebit_bold_regular
+    size: 16
+  - file: "fonts/PPNeueBit-Bold.otf"
+    id: neuebit_bold_medium
+    size: 20
+  - file: "fonts/PPNeueBit-Bold.otf"
+    id: neuebit_bold_large
+    size: 22
+  - file: "fonts/PPNeueBit-Bold.otf"
+    id: neuebit_bold_xlarge
+    size: 26
+  - file: "fonts/PPNeueBit-Bold.otf"
+    id: neuebit_bold_xxlarge
+    size: 34
+
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: font_mdi_large
+    size: 20
+    glyphs:
+      - "\U000F0079"  # mdi:battery (100%)
+      - "\U000F0082"  # mdi:battery-90
+      - "\U000F0081"  # mdi:battery-80
+      - "\U000F0080"  # mdi:battery-70
+      - "\U000F007F"  # mdi:battery-60
+      - "\U000F007E"  # mdi:battery-50
+      - "\U000F007D"  # mdi:battery-40
+      - "\U000F007C"  # mdi:battery-30
+      - "\U000F007B"  # mdi:battery-20
+      - "\U000F007A"  # mdi:battery-10
+      - "\U000F04B3"  # mdi:sleep-off
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+
+sensor:
+  - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+    update_interval: 45s
+    name: "WiFi Signal dB"
+    id: wifi_signal_db
+    unit_of_measurement: "dB"
+    entity_category: "diagnostic"
+
+  - platform: copy # Reports the WiFi signal strength in %
+    source_id: wifi_signal_db
+    name: "WiFi Signal Percent"
+    id: wifi_signal_percent
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+
+  - platform: adc
+    pin: GPIO1
+    id: battery_voltage
+    name: "Battery Voltage"
+    attenuation: 12db
+    update_interval: 45s
+    filters:
+      - multiply: 2.0  # Adjust based on voltage divider (if present)
+
+  - platform: template
+    name: "Battery Percentage"
+    id: battery_percent
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    device_class: battery
+    update_interval: 45s
+    lambda: |-
+      // Read battery voltage
+      float voltage = id(battery_voltage).state;
+
+      // Li-ion/Li-Po battery voltage to percentage conversion
+      // 4.2V = 100%, 3.0V = 0%
+      // Using a more accurate curve for Li-ion batteries
+
+      float percentage;
+
+      if (voltage >= 4.2) {
+        percentage = 100.0;
+      } else if (voltage <= 3.0) {
+        percentage = 0.0;
+      } else {
+        // Non-linear conversion based on typical Li-ion discharge curve
+        if (voltage >= 4.1) {
+          percentage = 90 + (voltage - 4.1) * 100;  // 4.1-4.2V = 90-100%
+        } else if (voltage >= 3.9) {
+          percentage = 70 + (voltage - 3.9) * 100;  // 3.9-4.1V = 70-90%
+        } else if (voltage >= 3.7) {
+          percentage = 40 + (voltage - 3.7) * 150;  // 3.7-3.9V = 40-70%
+        } else if (voltage >= 3.5) {
+          percentage = 20 + (voltage - 3.5) * 100;  // 3.5-3.7V = 20-40%
+        } else if (voltage >= 3.3) {
+          percentage = 10 + (voltage - 3.3) * 50;   // 3.3-3.5V = 10-20%
+        } else {
+          percentage = (voltage - 3.0) * 33.33;     // 3.0-3.3V = 0-10%
+        }
+      }
+
+      return percentage;
+
+  - platform: homeassistant
+    id: octopus_current_rate
+    entity_id: sensor.octopus_energy_electricity_22l4134239_1200031450010_current_rate
+    # on_value:
+    #   then:
+    #     - component.update: epaper_display
+
+  - platform: homeassistant
+    id: octopus_fixed_rate
+    entity_id: sensor.flexible_octopus_electricity_unit_rate_gbp_kwh
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO3
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Refresh Button"
+    on_press:
+      - logger.log:
+          format: "Refresh button pressed - updating battery and display"
+          level: INFO
+      - component.update: battery_voltage
+      - component.update: battery_percent
+      - component.update: epaper_display
+
+  - platform: gpio
+    pin:
+      number: GPIO5
+      mode: INPUT_PULLUP
+      inverted: true
+    name: "Deep Sleep Toggle Button"
+    on_press:
+      - lambda: |-
+          // Toggle the prevent_deep_sleep global variable
+          id(prevent_deep_sleep) = !id(prevent_deep_sleep);
+
+          if (id(prevent_deep_sleep)) {
+            ESP_LOGI("deep_sleep", "Button pressed - deep sleep prevention enabled");
+            id(deep_sleep_config).prevent_deep_sleep();
+          } else {
+            ESP_LOGI("deep_sleep", "Button pressed - deep sleep prevention disabled, will sleep in 2 minutes");
+            id(deep_sleep_config).allow_deep_sleep();
+          }
+      - if:
+          condition:
+            lambda: 'return !id(prevent_deep_sleep);'
+          then:
+            - delay: 1min
+            - script.execute: enter_deep_sleep_until_next_wakeup
+
+text_sensor:
+  - platform: homeassistant
+    id: octopus_rates
+    entity_id: sensor.octopus_rates_json
+    attribute: rates_json
+    # on_value:
+    #   then:
+    #     - component.update: epaper_display
+
+  - platform: template
+    name: "Wakeup Cause"
+    id: wakeup_cause
+    icon: "mdi:sleep"
+    lambda: |-
+      auto wakeup_reason = esp_sleep_get_wakeup_cause();
+
+      switch(wakeup_reason) {
+        case ESP_SLEEP_WAKEUP_UNDEFINED: return {"Undefined (not deep sleep exit)"};
+        case ESP_SLEEP_WAKEUP_EXT0: return {"External signal (RTC_IO)"};
+        case ESP_SLEEP_WAKEUP_EXT1: return {"External signal (RTC_CNTL)"};
+        case ESP_SLEEP_WAKEUP_TIMER: return {"Timer"};
+        case ESP_SLEEP_WAKEUP_TOUCHPAD: return {"Touchpad"};
+        case ESP_SLEEP_WAKEUP_ULP: return {"ULP program"};
+        case ESP_SLEEP_WAKEUP_GPIO: return {"GPIO"};
+        case ESP_SLEEP_WAKEUP_UART: return {"UART"};
+        case ESP_SLEEP_WAKEUP_WIFI: return {"WiFi"};
+        case ESP_SLEEP_WAKEUP_COCPU: return {"COCPU"};
+        case ESP_SLEEP_WAKEUP_COCPU_TRAP_TRIG: return {"COCPU crash"};
+        case ESP_SLEEP_WAKEUP_BT: return {"Bluetooth"};
+        default: return {"Power on or reset"};
+      }
+
+switch:
+  - platform: template
+    name: "Prevent Deep Sleep"
+    id: prevent_deep_sleep_switch
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - globals.set:
+          id: prevent_deep_sleep
+          value: 'true'
+      - deep_sleep.prevent: deep_sleep_config
+      - logger.log: "Deep sleep prevented"
+    turn_off_action:
+      - globals.set:
+          id: prevent_deep_sleep
+          value: 'false'
+      - deep_sleep.allow: deep_sleep_config
+      - logger.log: "Deep sleep allowed: will sleep in 1 minutes"
+      - delay: 1min
+      - script.execute: enter_deep_sleep_until_next_wakeup
+
+script:
+  - id: enter_deep_sleep_until_next_wakeup
+    then:
+      - lambda: |-
+          if (id(prevent_deep_sleep)) {
+            ESP_LOGI("deep_sleep", "Deep sleep prevented by user");
+            return;
+          }
+
+          auto time = id(ha_time).now();
+          if (!time.is_valid()) {
+            ESP_LOGW("deep_sleep", "Time not synced.");
+            return;
+          }
+
+          int current_minute = time.minute;
+          int current_second = time.second;
+
+          // Calculate seconds until next target time (00:50 or 30:50)
+          int target_minute;
+          int target_second = 50;
+
+          if (current_minute < 30 || (current_minute == 30 && current_second < 50)) {
+            target_minute = 30;
+          } else {
+            target_minute = 0;  // Next hour
+          }
+
+          int minutes_until_target;
+          if (target_minute > current_minute) {
+            minutes_until_target = target_minute - current_minute;
+          } else {
+            minutes_until_target = 60 - current_minute + target_minute;
+          }
+
+          int seconds_until_target = (minutes_until_target * 60) - current_second + target_second;
+
+          ESP_LOGI("deep_sleep", "Current time: %02d:%02d:%02d", time.hour, current_minute, current_second);
+          ESP_LOGI("deep_sleep", "Next wakeup in %d seconds (at :%02d:%02d)", seconds_until_target, target_minute, target_second);
+
+          // Enter deep sleep for calculated duration (convert to milliseconds)
+          id(deep_sleep_config).set_sleep_duration(seconds_until_target * 1000);
+          id(deep_sleep_config).dump_config();
+          id(deep_sleep_config).begin_sleep();
+
+display:
+  - platform: epaper_spi
+    id: epaper_display
+    model: Seeed-reTerminal-E1002
+    update_interval: never
+    full_update_every: 3
+    lambda: |-
+      #include <ArduinoJson.h>
+
+      // E-Ink Spectra 6 colors (native palette)
+      #define COLOR_BLACK Color(0, 0, 0)
+      #define COLOR_WHITE Color(255, 255, 255)
+      #define COLOR_RED Color(255, 0, 0)
+      #define COLOR_YELLOW Color(255, 255, 0)
+      #define COLOR_GREEN Color(0, 255, 0)
+      #define COLOR_BLUE Color(0, 0, 255)
+
+      // Bar colours
+      // Primary
+      #define BAR_COLOR_BLACK COLOR_BLACK, COLOR_BLACK
+      #define BAR_COLOR_WHITE COLOR_WHITE, COLOR_WHITE
+      #define BAR_COLOR_RED COLOR_RED, COLOR_RED
+      #define BAR_COLOR_YELLOW COLOR_YELLOW, COLOR_YELLOW
+      #define BAR_COLOR_GREEN COLOR_GREEN, COLOR_GREEN
+      #define BAR_COLOR_BLUE COLOR_BLUE, COLOR_BLUE
+      // Secondary
+      #define BAR_COLOR_ORANGE COLOR_RED, COLOR_YELLOW
+      #define BAR_COLOR_LIGHT_BLUE COLOR_BLUE, COLOR_WHITE
+      #define BAR_COLOR_LIGHT_GREEN COLOR_GREEN, COLOR_WHITE
+      #define BAR_COLOR_TEAL COLOR_GREEN, COLOR_BLUE
+      #define BAR_COLOR_LIGHT_RED COLOR_RED, COLOR_WHITE
+      #define BAR_COLOR_DARK_RED COLOR_RED, COLOR_BLACK
+      #define BAR_COLOR_PURPLE COLOR_BLUE, COLOR_RED
+      #define BAR_COLOR_PALE_YELLOW COLOR_YELLOW, COLOR_WHITE
+      #define BAR_COLOR_BROWN COLOR_GREEN, COLOR_RED
+
+      // UI colors
+      #define COLOR_CURRENT COLOR_ORANGE
+      #define COLOR_GRID COLOR_BLACK
+      #define COLOR_TEXT COLOR_BLACK
+      #define COLOR_BG COLOR_WHITE
+
+      // Graph dimensions
+      const int graph_x = 60;
+      const int graph_y = 60;
+      const int graph_width = 680;
+      const int graph_height = 360;
+
+      // Helper function to draw bar with optional checkerboard pattern
+      auto draw_bar = [&](int x, int y, int width, int height, Color color1, Color color2) {
+        if (color1 == color2) {
+          // Both colors are the same, use filled rectangle
+          it.filled_rectangle(x, y, width, height, color1);
+        } else {
+          // Draw checkerboard pattern
+          for (int py = y; py < y + height; py++) {
+            for (int px = x; px < x + width; px++) {
+              Color pixel_color = ((px + py) % 2 == 0) ? color1 : color2;
+              it.draw_pixel_at(px, py, pixel_color);
+            }
+          }
+        }
+      };
+
+      // Get current time
+      auto time = id(ha_time).now();
+      int current_hour = time.hour;
+      int current_minute = time.minute;
+
+      // Get and validate rates JSON
+      std::string rates_json = id(octopus_rates).state;
+      ESP_LOGD("rates", "Received data: %s", rates_json.c_str());
+
+      if (rates_json.empty()) {
+        ESP_LOGD("rates", "No rates data available yet, skipping display update");
+        return;
+      }
+
+      // Parse JSON
+      JsonDocument doc;
+      DeserializationError error = deserializeJson(doc, rates_json);
+
+      if (error) {
+        ESP_LOGE("rates", "JSON parsing failed: %s", error.c_str());
+        return;
+      }
+
+      // Get rates array
+      JsonArray rates = doc.as<JsonArray>();
+      int num_rates = rates.size();
+
+      if (num_rates == 0) {
+        ESP_LOGE("rates", "No rate periods found in data");
+        return;
+      }
+
+      // All validation passed - draw the graph!
+
+      // Clear background first
+      // it.fill(COLOR_BG);
+
+      // STEP 1: Find min and max for graph scaling
+      float min_rate = 999.0;
+      float max_rate = 0.0;
+
+      for (JsonObject rate : rates) {
+        float value = rate["value_inc_vat"];
+        if (value < min_rate) min_rate = value;
+        if (value > max_rate) max_rate = value;
+      }
+
+      float range = max_rate - min_rate;
+
+      // Y-axis: start at 0 if all values are positive, otherwise start at lowest value
+      float display_min = (min_rate >= 0) ? 0.0 : min_rate - (range * 0.1);
+      float display_max = max_rate + (range * 0.1);
+      float display_range = display_max - display_min;
+
+      // STEP 2: Draw grid lines
+      // Y-axis: horizontal lines at 0.05 increments
+      float y_increment = 0.05;
+      float y_start = floor(display_min / y_increment) * y_increment;
+
+      for (float price = y_start; price <= display_max + 0.001; price += y_increment) {
+        if (price < display_min - 0.001) continue;  // Skip values below display range
+
+        int y = graph_y + graph_height - (int)((price - display_min) / display_range * graph_height);
+        it.line(graph_x, y, graph_x + graph_width, y, COLOR_GRID);
+        it.printf(5, y - 7, id(font_small), COLOR_TEXT, "%.2fp", price);
+      }
+
+      // X-axis: vertical lines every 2 hours
+      int hours_per_line = 2;
+      for (int h = 0; h <= 24; h += hours_per_line) {
+        float x_pos = graph_x + (graph_width * h / 24.0);
+        it.line((int)x_pos, graph_y, (int)x_pos, graph_y + graph_height, COLOR_GRID);
+        it.printf((int)x_pos, graph_y + graph_height + 9, id(font_small),
+                 COLOR_TEXT, TextAlign::CENTER, "%02d:00", h);
+      }
+
+      // STEP 3: Draw the rate bars with color coding
+      // Always assume 48 bars (24 hours * 2 half-hour periods)
+      const int total_bars = 48;
+      float bar_width = (float)graph_width / total_bars;
+      float current_rate = 0.0;  // Track current rate for display
+
+      // Create arrays to store rate data for each bar position
+      float bar_rates[48];
+      bool bar_has_data[48];
+      for (int i = 0; i < 48; i++) {
+        bar_has_data[i] = false;
+      }
+
+      // Map rates to bar positions based on their start time
+      for (JsonObject rate : rates) {
+        float value_inc_vat = rate["value_inc_vat"];
+        const char* start_time = rate["start"];
+
+        // Parse start time
+        int hour = 0, minute = 0;
+        if (start_time && strlen(start_time) >= 16) {
+          sscanf(start_time + 11, "%d:%d", &hour, &minute);
+        }
+
+        // Calculate bar index (0-47): hour ranges 0-23, minute is 0 or 30
+        int bar_index = (hour * 2) + (minute / 30);
+        if (bar_index >= 0 && bar_index < 48) {
+          bar_rates[bar_index] = value_inc_vat;
+          bar_has_data[bar_index] = true;
+        }
+      }
+
+      // Draw bars for positions that have data
+      int current_minutes = current_hour * 60 + current_minute;
+
+      for (int index = 0; index < total_bars; index++) {
+        if (!bar_has_data[index]) continue;  // Skip if no data for this period
+
+        float value_inc_vat = bar_rates[index];
+
+        // Calculate if this is the current period
+        int hour = index / 2;
+        int minute = (index % 2) * 30;
+        int block_start_minutes = hour * 60 + minute;
+        bool is_current = (current_minutes >= block_start_minutes &&
+                          current_minutes < block_start_minutes + 30);
+
+        if (is_current) {
+          current_rate = value_inc_vat;
+        }
+
+        // Calculate bar position and height
+        int bar_height = (int)((value_inc_vat - display_min) / display_range * graph_height);
+        int bar_x = graph_x + (int)(index * bar_width) + 1;
+        int bar_y = graph_y + graph_height - bar_height;
+
+        // Highlight current period with arrow and dashed line (drawn first so bar goes over it)
+        if (is_current) {
+          int center_x = bar_x + (int)bar_width / 2;
+          int arrow_y = graph_y - 15;
+          int arrow_width = 12;
+          int arrow_height = 10;
+
+          // Draw filled triangle pointing down
+          it.filled_triangle(
+            center_x - arrow_width, arrow_y,
+            center_x + arrow_width, arrow_y,
+            center_x, arrow_y + arrow_height,
+            COLOR_BLACK
+          );
+
+          // Draw dashed vertical line from arrow to bottom of graph
+          int line_start = arrow_y + arrow_height;
+          int line_end = graph_y + graph_height;
+          int dash_length = 5;
+          int gap_length = 3;
+
+          for (int y = line_start; y < line_end; y += dash_length + gap_length) {
+            int dash_end = y + dash_length;
+            if (dash_end > line_end) dash_end = line_end;
+            it.line(center_x, y, center_x, dash_end, COLOR_BLACK);
+          }
+        }
+
+        // Draw bar with color based on rate (7 tiers)
+        float value_pence = value_inc_vat * 100;
+
+        if (value_pence < 0) {
+          draw_bar(bar_x, bar_y, (int)bar_width - 1, bar_height, BAR_COLOR_TEAL);
+        } else if (value_pence < 10) {
+          draw_bar(bar_x, bar_y, (int)bar_width - 1, bar_height, BAR_COLOR_LIGHT_BLUE);
+        } else if (value_pence < 20) {
+          draw_bar(bar_x, bar_y, (int)bar_width - 1, bar_height, BAR_COLOR_LIGHT_GREEN);
+        } else if (value_pence < 27) {
+          draw_bar(bar_x, bar_y, (int)bar_width - 1, bar_height, BAR_COLOR_GREEN);
+        } else if (value_pence < 35) {
+          draw_bar(bar_x, bar_y, (int)bar_width - 1, bar_height, BAR_COLOR_ORANGE);
+        } else if (value_pence < 45) {
+          draw_bar(bar_x, bar_y, (int)bar_width - 1, bar_height, BAR_COLOR_RED);
+        } else {
+          draw_bar(bar_x, bar_y, (int)bar_width - 1, bar_height, BAR_COLOR_DARK_RED);
+        }
+      }
+
+      // STEP 3b: Draw fixed rate reference line
+      double fixed_rate = id(octopus_fixed_rate).state;
+      if (!isnan(fixed_rate) && fixed_rate >= display_min && fixed_rate <= display_max) {
+        // Calculate y position for the fixed rate
+        int fixed_rate_y = graph_y + graph_height - (int)((fixed_rate - display_min) / display_range * graph_height);
+
+        // Draw dashed horizontal line across the graph
+        int dash_length = 2;
+        int gap_length = 8;
+
+        for (int x = graph_x; x < graph_x + graph_width; x += dash_length + gap_length) {
+          int dash_end = x + dash_length;
+          if (dash_end > graph_x + graph_width) dash_end = graph_x + graph_width;
+          it.line(x, fixed_rate_y, dash_end, fixed_rate_y, COLOR_BLACK);
+        }
+
+        // Draw legend label above the line
+        it.printf(graph_x + 5, fixed_rate_y - 16, id(font_small), COLOR_TEXT,
+                 "fixed rate");
+      }
+
+      // STEP 4: Draw border and frame
+      it.rectangle(graph_x - 1, graph_y - 1, graph_width + 2, graph_height + 2, COLOR_BLACK);
+
+      // STEP 5: Add title, current price, and battery
+      it.printf(400, 15, id(font_large), COLOR_TEXT, TextAlign::CENTER,
+               "Octopus Energy Rates - Today");
+
+      // Show current rate in £/kWh
+      it.printf(400, 38, id(neuebit_bold_xlarge), COLOR_TEXT, TextAlign::CENTER,
+               "Current: £%.4f/kWh", current_rate);
+
+      // Battery percentage with icon in top right
+      float battery = id(battery_percent).state;
+
+      // Select battery icon based on percentage
+      const char* battery_icon;
+      if (battery >= 95) {
+        battery_icon = "\U000F0079";  // 100%
+      } else if (battery >= 85) {
+        battery_icon = "\U000F0082";  // 90%
+      } else if (battery >= 75) {
+        battery_icon = "\U000F0081";  // 80%
+      } else if (battery >= 65) {
+        battery_icon = "\U000F0080";  // 70%
+      } else if (battery >= 55) {
+        battery_icon = "\U000F007F";  // 60%
+      } else if (battery >= 45) {
+        battery_icon = "\U000F007E";  // 50%
+      } else if (battery >= 35) {
+        battery_icon = "\U000F007D";  // 40%
+      } else if (battery >= 25) {
+        battery_icon = "\U000F007C";  // 30%
+      } else if (battery >= 15) {
+        battery_icon = "\U000F007B";  // 20%
+      } else {
+        battery_icon = "\U000F007A";  // 10%
+      }
+
+      // Draw battery icon and percentage (baseline-aligned, with spacing for 100%)
+      it.printf(752, 18, id(font_mdi_large), COLOR_TEXT, TextAlign::BASELINE_RIGHT, "%s", battery_icon);
+      it.printf(790, 18, id(neuebit_regular_xlarge), COLOR_TEXT, TextAlign::BASELINE_RIGHT, "%.0f%%", battery);
+
+      // Show sleep-off icon if deep sleep is prevented
+      if (id(prevent_deep_sleep)) {
+        it.printf(720, 18, id(font_mdi_large), COLOR_TEXT, TextAlign::BASELINE_RIGHT, "\U000F04B3");
+      }
+
+      // STEP 6: Legend (7 tiers centered on screen)
+      int legend_y = graph_y + graph_height + 30;
+      int legend_x = 90;
+
+      // <0p: Teal
+      draw_bar(legend_x, legend_y, 20, 15, BAR_COLOR_TEAL);
+      it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
+      it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, "<0p");
+
+      // 0-10p: Light blue
+      legend_x += 75;
+      draw_bar(legend_x, legend_y, 20, 15, BAR_COLOR_LIGHT_BLUE);
+      it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
+      it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, "0-10p");
+
+      // 10-20p: Light green
+      legend_x += 90;
+      draw_bar(legend_x, legend_y, 20, 15, BAR_COLOR_LIGHT_GREEN);
+      it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
+      it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, "10-20p");
+
+      // 20-27p: Green
+      legend_x += 100;
+      draw_bar(legend_x, legend_y, 20, 15, BAR_COLOR_GREEN);
+      it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
+      it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, "20-27p");
+
+      // 27-35p: Orange
+      legend_x += 100;
+      draw_bar(legend_x, legend_y, 20, 15, BAR_COLOR_ORANGE);
+      it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
+      it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, "27-35p");
+
+      // 35-50p: Red
+      legend_x += 100;
+      draw_bar(legend_x, legend_y, 20, 15, BAR_COLOR_RED);
+      it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
+      it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, "35-50p");
+
+      // >50p: Dark red
+      legend_x += 100;
+      draw_bar(legend_x, legend_y, 20, 15, BAR_COLOR_DARK_RED);
+      it.rectangle(legend_x, legend_y, 20, 15, COLOR_BLACK);
+      it.printf(legend_x + 25, legend_y + 2, id(font_small), COLOR_TEXT, ">50p");
+
+      // STEP 7: Show current time in top left
+      it.printf(10, 18, id(neuebit_regular_xlarge), COLOR_TEXT, TextAlign::BASELINE, "%02d:%02d", current_hour, current_minute);
+
+      // Step 8: show multiple rectangles
+      // draw_bar(10, 25, 15, 30, BAR_COLOR_BLACK);
+      // draw_bar(25, 25, 15, 30, BAR_COLOR_YELLOW);
+      // draw_bar(40, 25, 15, 30, BAR_COLOR_RED);
+      // draw_bar(55, 25, 15, 30, BAR_COLOR_BLUE);
+      // draw_bar(70, 25, 15, 30, BAR_COLOR_GREEN);
+
+      // draw_bar(100 , 25, 15, 30, BAR_COLOR_ORANGE);
+      // draw_bar(115, 25, 15, 30, BAR_COLOR_LIGHT_BLUE);
+      // draw_bar(130, 25, 15, 30, BAR_COLOR_TEAL);
+      // draw_bar(145, 25, 15, 30, BAR_COLOR_LIGHT_GREEN);
+      // draw_bar(160, 25, 15, 30, BAR_COLOR_LIGHT_RED);
+      // draw_bar(175, 25, 15, 30, BAR_COLOR_DARK_RED);
+
+      // draw_bar(205, 25, 15, 30, BAR_COLOR_PURPLE); // purple
+      // draw_bar(220, 25, 15, 30, BAR_COLOR_PALE_YELLOW); // pale yellow
+      // draw_bar(230, 25, 15, 30, BAR_COLOR_BROWN); 
+
