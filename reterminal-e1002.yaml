@@ -403,7 +403,6 @@ display:
     id: epaper_display
     model: Seeed-reTerminal-E1002
     update_interval: never
-    full_update_every: 3
     lambda: |-
       #include <ArduinoJson.h>
 
