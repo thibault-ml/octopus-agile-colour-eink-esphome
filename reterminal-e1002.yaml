@@ -362,13 +362,13 @@ script:
     then:
       - lambda: |-
           if (id(prevent_deep_sleep)) {
-            ESP_LOGI("deep_sleep", "Deep sleep prevented by user");
+            ESP_LOGI("enter_deep_sleep", "Deep sleep prevented by user");
             return;
           }
 
           auto time = id(ha_time).now();
           if (!time.is_valid()) {
-            ESP_LOGW("deep_sleep", "Time not synced.");
+            ESP_LOGW("enter_deep_sleep", "Time not synced.");
             return;
           }
 
@@ -394,8 +394,8 @@ script:
 
           int seconds_until_target = (minutes_until_target * 60) - current_second + target_second;
 
-          ESP_LOGI("deep_sleep", "Current time: %02d:%02d:%02d", time.hour, current_minute, current_second);
-          ESP_LOGI("deep_sleep", "Next wakeup in %d seconds (at :%02d:%02d)", seconds_until_target, target_minute, target_second);
+          ESP_LOGI("enter_deep_sleep", "Current time: %02d:%02d:%02d", time.hour, current_minute, current_second);
+          ESP_LOGI("enter_deep_sleep", "Next wakeup in %d seconds (at :%02d:%02d)", seconds_until_target, target_minute, target_second);
 
           // Enter deep sleep for calculated duration (convert to milliseconds)
           id(deep_sleep_config).set_sleep_duration(seconds_until_target * 1000);
@@ -472,12 +472,12 @@ display:
 
       // Get and validate rates JSON
       std::string rates_json = id(octopus_rates).state;
-      ESP_LOGD("rates", "Received data: %s", rates_json.c_str());
+      ESP_LOGD("display.lambda", "JSON rates data: %s", rates_json.c_str());
 
       if (rates_json.empty()) {
         it.printf(400, 240, id(font_regular), COLOR_TEXT, TextAlign::CENTER,
                  "Waiting for rates data...");
-        ESP_LOGD("rates", "No rates data available yet, skipping display update");
+        ESP_LOGD("display.lambda", "No rates data available yet, skipping display update");
         return;
       }
 
@@ -488,7 +488,7 @@ display:
       if (error) {
         it.printf(400, 240, id(font_regular), COLOR_TEXT, TextAlign::CENTER,
                  "Error parsing rates data");
-        ESP_LOGE("rates", "JSON parsing failed: %s", error.c_str());
+        ESP_LOGE("display.lambda", "JSON parsing failed: %s", error.c_str());
         return;
       }
 
@@ -499,7 +499,7 @@ display:
       if (num_rates == 0) {
         it.printf(400, 240, id(font_regular), COLOR_TEXT, TextAlign::CENTER,
                  "No rate periods found");
-        ESP_LOGE("rates", "No rate periods found in data");
+        ESP_LOGE("display.lambda", "No rate periods found in data");
         return;
       }
 
