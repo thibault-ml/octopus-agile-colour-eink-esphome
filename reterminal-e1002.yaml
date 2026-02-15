@@ -12,7 +12,9 @@ esphome:
         - component.update: battery_percent
     - priority: -100  # Run after everything else is initialized
       then:
-        - logger.log: "[on_boot] Boot finished. Will sleep in 1 minutes"
+        - logger.log:
+            tag: "on_boot"
+            format: "Boot finished. Will sleep in 1 minute"
         - delay: 1min
         - script.execute: enter_deep_sleep_until_next_wakeup
 
@@ -38,7 +40,8 @@ api:
   on_client_connected:
     - logger.log:
         level: info
-        format: "[api] Client %s connected to API with IP %s"
+        tag: "api"
+        format: "Client %s connected to API with IP %s"
         args: ["client_info.c_str()", "client_address.c_str()"]
     - wait_until:
         condition:
@@ -55,13 +58,13 @@ api:
         if (std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash) {
           if (std::abs(current_rate - last_rate) > epsilon) {
             ESP_LOGD("api", "--> Current rate data changed");
-            ESP_LOGD("api", "last rate: %.4f", last_rate);
-            ESP_LOGD("api", " new rate: %.4f", current_rate);
+            ESP_LOGD("api", "    last rate: %.4f", last_rate);
+            ESP_LOGD("api", "     new rate: %.4f", current_rate);
           }
           if (current_hash != last_hash) {
             ESP_LOGD("api", "--> rates json changed");
-            ESP_LOGD("api", "last hash: %zu", last_hash);
-            ESP_LOGD("api", " new hash: %zu", current_hash);
+            ESP_LOGD("api", "    last hash: %zu", last_hash);
+            ESP_LOGD("api", "     new hash: %zu", current_hash);
           }
           ESP_LOGI("api", "Sensor data has changed, updating display");
           id(last_current_rate) = current_rate;
@@ -273,6 +276,7 @@ binary_sensor:
     name: "Refresh Button"
     on_press:
       - logger.log:
+          tag: "refresh"
           format: "Refresh button pressed - updating battery and display"
           level: INFO
       - component.update: battery_voltage
@@ -353,7 +357,7 @@ switch:
           id: prevent_deep_sleep
           value: 'false'
       - deep_sleep.allow: deep_sleep_config
-      - logger.log: "Deep sleep allowed: will sleep in 1 minutes"
+      - logger.log: "Deep sleep allowed: will sleep in 1 minute"
       - delay: 1min
       - script.execute: enter_deep_sleep_until_next_wakeup
 
