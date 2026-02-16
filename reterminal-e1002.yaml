@@ -82,10 +82,14 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
+# spi bus for display
 spi:
   clk_pin: GPIO7
   mosi_pin: GPIO9
-
+# I²C bus for TºC and %RH
+i2c:
+  scl: GPIO20
+  sda: GPIO19
 
 globals:
   - id: prevent_deep_sleep
@@ -206,6 +210,15 @@ sensor:
       - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
     unit_of_measurement: "%"
     entity_category: "diagnostic"
+
+  - platform: sht4x
+    update_interval: 45s
+    temperature:
+      name: "Temperature"
+      id: temperature
+    humidity:
+      name: "Relative Humidity"
+      id: humidity
 
   - platform: adc
     pin: GPIO1
