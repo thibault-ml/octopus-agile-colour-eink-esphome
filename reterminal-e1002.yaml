@@ -44,17 +44,26 @@ api:
         format: "Client %s connected to API with IP %s"
         args: ["client_info.c_str()", "client_address.c_str()"]
     - wait_until:
-        condition:
-          lambda: 'return !isnan(id(octopus_current_rate).state) && !id(octopus_rates).state.empty();'
         timeout: 30s
+        condition:
+          lambda: |-
+            if (isnan(id(octopus_current_rate).state) || id(octopus_rates).state.empty()) {
+              return false;
+            }
+            float current_rate = id(octopus_current_rate).state;
+            float last_rate = id(last_current_rate);
+            size_t current_hash = std::hash<std::string>{}(id(octopus_rates).state);
+            size_t last_hash = id(last_rates_json_hash);
+            const float epsilon = 0.00001;
+
+            return std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash;
     - lambda: |-
         float current_rate = id(octopus_current_rate).state;
         float last_rate = id(last_current_rate);
-        std::string current_rates = id(octopus_rates).state;
-        size_t current_hash = std::hash<std::string>{}(current_rates);
+        size_t current_hash = std::hash<std::string>{}(id(octopus_rates).state);
         size_t last_hash = id(last_rates_json_hash);
-
         const float epsilon = 0.00001;
+
         if (std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash) {
           if (std::abs(current_rate - last_rate) > epsilon) {
             ESP_LOGD("api", "--> Current rate data changed");
