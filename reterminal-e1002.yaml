@@ -392,11 +392,11 @@ script:
           int current_minute = time.minute;
           int current_second = time.second;
 
-          // Calculate seconds until next target time (00:50 or 30:50)
+          // Calculate seconds until next target time (00:55 or 30:55)
           int target_minute;
-          int target_second = 50;
+          int target_second = 59;
 
-          if (current_minute < 30 || (current_minute == 30 && current_second < 50)) {
+          if (current_minute < 30 || (current_minute == 30 && current_second < target_second)) {
             target_minute = 30;
           } else {
             target_minute = 0;  // Next hour
