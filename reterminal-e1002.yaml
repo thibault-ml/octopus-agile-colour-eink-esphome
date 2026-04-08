@@ -609,6 +609,9 @@ display:
       // Draw bars for positions that have data
       int current_minutes = current_hour * 60 + current_minute;
 
+      // Y position of the zero line (bottom of graph when all rates are positive)
+      int zero_y = graph_y + graph_height - (int)((0.0f - display_min) / display_range * graph_height);
+
       for (int index = 0; index < total_bars; index++) {
         if (!bar_has_data[index]) continue;  // Skip if no data for this period
 
@@ -625,10 +628,16 @@ display:
           current_rate = value_inc_vat;
         }
 
-        // Calculate bar position and height
-        int bar_height = (int)((value_inc_vat - display_min) / display_range * graph_height);
+        // Bars are anchored at the zero line: positive bars go up, negative bars go down
         int bar_x = graph_x + (int)(index * bar_width) + 1;
-        int bar_y = graph_y + graph_height - bar_height;
+        int bar_y, bar_height;
+        if (value_inc_vat >= 0) {
+          bar_height = (int)(value_inc_vat / display_range * graph_height);
+          bar_y = zero_y - bar_height;
+        } else {
+          bar_height = (int)((-value_inc_vat) / display_range * graph_height);
+          bar_y = zero_y;
+        }
 
         // Highlight current period with arrow and dashed line (drawn first so bar goes over it)
         if (is_current) {
