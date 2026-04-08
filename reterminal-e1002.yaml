@@ -243,6 +243,7 @@ sensor:
     id: battery_percent
     unit_of_measurement: "%"
     accuracy_decimals: 0
+    state_class: measurement
     device_class: battery
     update_interval: 45s
     lambda: |-
