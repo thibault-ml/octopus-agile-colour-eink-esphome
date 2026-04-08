@@ -250,31 +250,20 @@ sensor:
       // Read battery voltage
       float voltage = id(battery_voltage).state;
 
-      // Li-ion/Li-Po battery voltage to percentage conversion
-      // 4.2V = 100%, 3.0V = 0%
-      // Using a more accurate curve for Li-ion batteries
-
+      // Calibrated from observed discharge:
+      //   4.17V = 100% (max charge observed)
+      //   3.40V =   6% (knee: 31 of 33 days consumed above this point)
+      //   2.50V =   0% (min observed before rapid degradation)
       float percentage;
 
-      if (voltage >= 4.2) {
+      if (voltage >= 4.17) {
         percentage = 100.0;
-      } else if (voltage <= 3.0) {
-        percentage = 0.0;
+      } else if (voltage >= 3.4) {
+        percentage = 6.0 + (voltage - 3.4) * (94.0 / 0.77);  // 3.4-4.17V = 6-100%
+      } else if (voltage >= 2.5) {
+        percentage = (voltage - 2.5) * (6.0 / 0.9);           // 2.5-3.4V  = 0-6%
       } else {
-        // Non-linear conversion based on typical Li-ion discharge curve
-        if (voltage >= 4.1) {
-          percentage = 90 + (voltage - 4.1) * 100;  // 4.1-4.2V = 90-100%
-        } else if (voltage >= 3.9) {
-          percentage = 70 + (voltage - 3.9) * 100;  // 3.9-4.1V = 70-90%
-        } else if (voltage >= 3.7) {
-          percentage = 40 + (voltage - 3.7) * 150;  // 3.7-3.9V = 40-70%
-        } else if (voltage >= 3.5) {
-          percentage = 20 + (voltage - 3.5) * 100;  // 3.5-3.7V = 20-40%
-        } else if (voltage >= 3.3) {
-          percentage = 10 + (voltage - 3.3) * 50;   // 3.3-3.5V = 10-20%
-        } else {
-          percentage = (voltage - 3.0) * 33.33;     // 3.0-3.3V = 0-10%
-        }
+        percentage = 0.0;
       }
 
       return percentage;
