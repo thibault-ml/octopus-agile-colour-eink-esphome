@@ -252,15 +252,15 @@ sensor:
       float voltage = id(battery_voltage).state;
 
       // Calibrated from observed discharge:
-      //   4.17V = 100% (max charge observed)
+      //   4.15V = 100% (max charge observed)
       //   3.40V =   6% (knee: 31 of 33 days consumed above this point)
       //   2.50V =   0% (min observed before rapid degradation)
       float percentage;
 
-      if (voltage >= 4.17) {
+      if (voltage >= 4.15) {
         percentage = 100.0;
       } else if (voltage >= 3.4) {
-        percentage = 6.0 + (voltage - 3.4) * (94.0 / 0.77);  // 3.4-4.17V = 6-100%
+        percentage = 6.0 + (voltage - 3.4) * (94.0 / 0.75);  // 3.4-4.15V = 6-100%
       } else if (voltage >= 2.5) {
         percentage = (voltage - 2.5) * (6.0 / 0.9);           // 2.5-3.4V  = 0-6%
       } else {
