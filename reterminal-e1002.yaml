@@ -48,24 +48,31 @@ api:
         timeout: 30s
         condition:
           lambda: |-
-            if (isnan(id(octopus_current_rate).state) || id(octopus_rates).state.empty()) {
+            if (isnan(id(octopus_current_rate).state) || id(octopus_rates).state.empty() ||
+                id(octopus_next_rates).state.empty()) {
               return false;
             }
             float current_rate = id(octopus_current_rate).state;
             float last_rate = id(last_current_rate);
             size_t current_hash = std::hash<std::string>{}(id(octopus_rates).state);
             size_t last_hash = id(last_rates_json_hash);
+            size_t next_hash = std::hash<std::string>{}(id(octopus_next_rates).state);
+            size_t last_next_hash = id(last_next_rates_json_hash);
             const float epsilon = 0.00001;
 
-            return std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash;
+            return std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash ||
+                   next_hash != last_next_hash;
     - lambda: |-
         float current_rate = id(octopus_current_rate).state;
         float last_rate = id(last_current_rate);
         size_t current_hash = std::hash<std::string>{}(id(octopus_rates).state);
         size_t last_hash = id(last_rates_json_hash);
+        size_t next_hash = std::hash<std::string>{}(id(octopus_next_rates).state);
+        size_t last_next_hash = id(last_next_rates_json_hash);
         const float epsilon = 0.00001;
 
-        if (std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash) {
+        if (std::abs(current_rate - last_rate) > epsilon || current_hash != last_hash ||
+            next_hash != last_next_hash) {
           if (std::abs(current_rate - last_rate) > epsilon) {
             ESP_LOGD("api", "--> Current rate data changed");
             ESP_LOGD("api", "    last rate: %.4f", last_rate);
@@ -76,9 +83,15 @@ api:
             ESP_LOGD("api", "    last hash: %zu", last_hash);
             ESP_LOGD("api", "     new hash: %zu", current_hash);
           }
+          if (next_hash != last_next_hash) {
+            ESP_LOGD("api", "--> next day rates json changed");
+            ESP_LOGD("api", "    last hash: %zu", last_next_hash);
+            ESP_LOGD("api", "     new hash: %zu", next_hash);
+          }
           ESP_LOGI("api", "Sensor data has changed, updating display");
           id(last_current_rate) = current_rate;
           id(last_rates_json_hash) = current_hash;
+          id(last_next_rates_json_hash) = next_hash;
           id(epaper_display).update();
         } else {
           ESP_LOGI("api", "Sensor data unchanged, skipping display update");
@@ -111,6 +124,10 @@ globals:
     restore_value: yes
     initial_value: '0.0'
   - id: last_rates_json_hash
+    type: size_t
+    restore_value: yes
+    initial_value: '0'
+  - id: last_next_rates_json_hash
     type: size_t
     restore_value: yes
     initial_value: '0'
@@ -330,6 +347,11 @@ text_sensor:
     #   then:
     #     - component.update: epaper_display
 
+  - platform: homeassistant
+    id: octopus_next_rates
+    entity_id: sensor.octopus_next_rates_json
+    attribute: rates_json
+
   - platform: template
     name: "Wakeup Cause"
     id: wakeup_cause
@@ -486,10 +508,13 @@ display:
       auto time = id(ha_time).now();
       int current_hour = time.hour;
       int current_minute = time.minute;
+      time_t now_epoch = time.timestamp;
 
       // Get and validate rates JSON
       std::string rates_json = id(octopus_rates).state;
+      std::string next_rates_json = id(octopus_next_rates).state;
       ESP_LOGD("display.lambda", "JSON rates data: %s", rates_json.c_str());
+      ESP_LOGD("display.lambda", "JSON next day rates data: %s", next_rates_json.c_str());
 
       if (rates_json.empty()) {
         it.printf(400, 240, id(font_regular), COLOR_TEXT, TextAlign::CENTER,
@@ -498,22 +523,85 @@ display:
         return;
       }
 
-      // Parse JSON
-      JsonDocument doc;
-      DeserializationError error = deserializeJson(doc, rates_json);
+      // Rate periods from today's and tomorrow's rates, placed by their UTC start time
+      struct RateSlot {
+        time_t start;     // UTC epoch
+        int local_date;   // YYYYMMDD, as written in the timestamp
+        float value_inc_vat;
+      };
+      const int max_slots = 128;
+      const int slot_seconds = 30 * 60;
+      static RateSlot slots[max_slots];
+      int num_slots = 0;
 
-      if (error) {
+      // Parse "YYYY-MM-DDTHH:MM:SS+HH:MM" using its UTC offset, so the repeated hour when
+      // the clocks go back (and the skipped one when they go forward) is handled
+      auto parse_start = [](const char* s, time_t* epoch, int* local_date) -> bool {
+        int year, month, day, hour, minute, second, offset_hours = 0, offset_minutes = 0;
+        char sign = 'Z';
+        if (!s || sscanf(s, "%d-%d-%dT%d:%d:%d%c%d:%d", &year, &month, &day, &hour, &minute,
+                         &second, &sign, &offset_hours, &offset_minutes) < 6 ||
+            month < 1 || month > 12) {
+          return false;
+        }
+
+        // Days since 1970-01-01 (good until 2100)
+        static const int days_before_month[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+        int64_t days = (int64_t)(year - 1970) * 365 + (year - 1969) / 4 +
+                       days_before_month[month - 1] + day - 1;
+        if (month > 2 && year % 4 == 0) days++;
+
+        int offset = offset_hours * 3600 + offset_minutes * 60;
+        if (sign == '-') offset = -offset;
+        else if (sign != '+') offset = 0;
+
+        *epoch = (time_t)(days * 86400 + hour * 3600 + minute * 60 + second - offset);
+        *local_date = year * 10000 + month * 100 + day;
+        return true;
+      };
+
+      // Add a JSON array of rates to slots. A period in both lists (e.g. stale next day
+      // rates just after midnight) is only kept once
+      JsonDocument doc;
+      auto add_rates = [&](const std::string& json) -> bool {
+        DeserializationError error = deserializeJson(doc, json);
+        if (error) {
+          ESP_LOGE("display.lambda", "JSON parsing failed: %s", error.c_str());
+          return false;
+        }
+
+        for (JsonObject rate : doc.as<JsonArray>()) {
+          const char* start_time = rate["start"];
+          float value_inc_vat = rate["value_inc_vat"];
+          time_t start;
+          int local_date;
+          if (!parse_start(start_time, &start, &local_date)) continue;
+
+          int i = 0;
+          while (i < num_slots && slots[i].start != start) i++;
+          if (i == num_slots) {
+            if (num_slots == max_slots) break;
+            num_slots++;
+          }
+          slots[i].start = start;
+          slots[i].local_date = local_date;
+          slots[i].value_inc_vat = value_inc_vat;
+        }
+        return true;
+      };
+
+      if (!add_rates(rates_json)) {
         it.printf(400, 240, id(font_regular), COLOR_TEXT, TextAlign::CENTER,
                  "Error parsing rates data");
-        ESP_LOGE("display.lambda", "JSON parsing failed: %s", error.c_str());
         return;
       }
 
-      // Get rates array
-      JsonArray rates = doc.as<JsonArray>();
-      int num_rates = rates.size();
+      // Tomorrow's rates are optional: they're usually published around 4-5pm
+      if (!next_rates_json.empty() && !add_rates(next_rates_json)) {
+        ESP_LOGW("display.lambda", "Ignoring next day rates");
+      }
 
-      if (num_rates == 0) {
+      if (num_slots == 0) {
         it.printf(400, 240, id(font_regular), COLOR_TEXT, TextAlign::CENTER,
                  "No rate periods found");
         ESP_LOGE("display.lambda", "No rate periods found in data");
@@ -525,12 +613,42 @@ display:
       // Clear background first
       // it.fill(COLOR_BG);
 
-      // STEP 1: Find min and max for graph scaling
+      // STEP 0: Pick the time window to draw
+      // Normally the whole of the last day we have rates for (i.e. today). Once tomorrow's
+      // rates are in, it runs from the current period to the last known one instead.
+      time_t last_start = slots[0].start;
+      int last_date = slots[0].local_date;
+      for (int i = 1; i < num_slots; i++) {
+        if (slots[i].start > last_start) {
+          last_start = slots[i].start;
+          last_date = slots[i].local_date;
+        }
+      }
+      time_t last_day_start = last_start;
+      for (int i = 0; i < num_slots; i++) {
+        if (slots[i].local_date == last_date && slots[i].start < last_day_start) {
+          last_day_start = slots[i].start;
+        }
+      }
+
+      time_t window_end = last_start + slot_seconds;
+      time_t window_start = last_day_start;
+      time_t current_slot_start = now_epoch - (now_epoch % slot_seconds);
+      if (time.is_valid() && current_slot_start < window_start) {
+        window_start = current_slot_start;
+      }
+      if (window_end - window_start > (time_t)max_slots * slot_seconds) {
+        window_start = window_end - (time_t)max_slots * slot_seconds;
+      }
+      bool showing_next_day = window_start < last_day_start;
+
+      // STEP 1: Find min and max (within the window) for graph scaling
       float min_rate = 999.0;
       float max_rate = 0.0;
 
-      for (JsonObject rate : rates) {
-        float value = rate["value_inc_vat"];
+      for (int i = 0; i < num_slots; i++) {
+        if (slots[i].start < window_start || slots[i].start >= window_end) continue;
+        float value = slots[i].value_inc_vat;
         if (value < min_rate) min_rate = value;
         if (value > max_rate) max_rate = value;
       }
@@ -543,7 +661,7 @@ display:
       float display_range = display_max - display_min;
 
       // STEP 2: Draw grid lines
-      // Y-axis: horizontal lines at 0.05 increments
+      // Y-axis: horizontal lines at 5p increments
       float y_increment = 0.05;
       float y_start = floor(display_min / y_increment) * y_increment;
 
@@ -552,67 +670,43 @@ display:
 
         int y = graph_y + graph_height - (int)((price - display_min) / display_range * graph_height);
         it.line(graph_x, y, graph_x + graph_width, y, COLOR_GRID);
-        it.printf(5, y - 7, id(font_small), COLOR_TEXT, "%.2fp", price);
+        it.printf(graph_x - 8, y - 7, id(font_small), COLOR_TEXT, TextAlign::TOP_RIGHT,
+                 "%dp", (int)roundf(price * 100));
       }
 
-      // X-axis: vertical lines every 2 hours
+      // One bar per half-hour period in the window (more or fewer than 48 when the clocks change)
+      const int total_bars = (window_end - window_start) / slot_seconds;
+      float bar_width = (float)graph_width / total_bars;
+
+      // X-axis: vertical lines every 2 hours of local time
       int hours_per_line = 2;
-      for (int h = 0; h <= 24; h += hours_per_line) {
-        float x_pos = graph_x + (graph_width * h / 24.0);
-        it.line((int)x_pos, graph_y, (int)x_pos, graph_y + graph_height, COLOR_GRID);
-        it.printf((int)x_pos, graph_y + graph_height + 9, id(font_small),
-                 COLOR_TEXT, TextAlign::CENTER, "%02d:00", h);
+      for (int index = 0; index <= total_bars; index++) {
+        ESPTime local = ESPTime::from_epoch_local(window_start + (time_t)index * slot_seconds);
+        if (local.minute != 0 || local.hour % hours_per_line != 0) continue;
+
+        int x_pos = graph_x + graph_width * index / total_bars;
+        it.line(x_pos, graph_y, x_pos, graph_y + graph_height, COLOR_GRID);
+        // A midnight-to-midnight window ends at "24:00" rather than "00:00"
+        int label_hour = (index == total_bars && local.hour == 0) ? 24 : local.hour;
+        it.printf(x_pos, graph_y + graph_height + 9, id(font_small),
+                 COLOR_TEXT, TextAlign::CENTER, "%02d:00", label_hour);
       }
 
       // STEP 3: Draw the rate bars with color coding
-      // Always assume 48 bars (24 hours * 2 half-hour periods)
-      const int total_bars = 48;
-      float bar_width = (float)graph_width / total_bars;
       float current_rate = 0.0;  // Track current rate for display
-
-      // Create arrays to store rate data for each bar position
-      float bar_rates[48];
-      bool bar_has_data[48];
-      for (int i = 0; i < 48; i++) {
-        bar_has_data[i] = false;
-      }
-
-      // Map rates to bar positions based on their start time
-      for (JsonObject rate : rates) {
-        float value_inc_vat = rate["value_inc_vat"];
-        const char* start_time = rate["start"];
-
-        // Parse start time
-        int hour = 0, minute = 0;
-        if (start_time && strlen(start_time) >= 16) {
-          sscanf(start_time + 11, "%d:%d", &hour, &minute);
-        }
-
-        // Calculate bar index (0-47): hour ranges 0-23, minute is 0 or 30
-        int bar_index = (hour * 2) + (minute / 30);
-        if (bar_index >= 0 && bar_index < 48) {
-          bar_rates[bar_index] = value_inc_vat;
-          bar_has_data[bar_index] = true;
-        }
-      }
-
-      // Draw bars for positions that have data
-      int current_minutes = current_hour * 60 + current_minute;
 
       // Y position of the zero line (bottom of graph when all rates are positive)
       int zero_y = graph_y + graph_height - (int)((0.0f - display_min) / display_range * graph_height);
 
-      for (int index = 0; index < total_bars; index++) {
-        if (!bar_has_data[index]) continue;  // Skip if no data for this period
+      for (int i = 0; i < num_slots; i++) {
+        if (slots[i].start < window_start || slots[i].start >= window_end) continue;
 
-        float value_inc_vat = bar_rates[index];
+        float value_inc_vat = slots[i].value_inc_vat;
+        int index = (slots[i].start - window_start) / slot_seconds;
 
         // Calculate if this is the current period
-        int hour = index / 2;
-        int minute = (index % 2) * 30;
-        int block_start_minutes = hour * 60 + minute;
-        bool is_current = (current_minutes >= block_start_minutes &&
-                          current_minutes < block_start_minutes + 30);
+        bool is_current = time.is_valid() && now_epoch >= slots[i].start &&
+                          now_epoch < slots[i].start + slot_seconds;
 
         if (is_current) {
           current_rate = value_inc_vat;
@@ -693,17 +787,44 @@ display:
           it.line(x, fixed_rate_y, dash_end, fixed_rate_y, COLOR_BLACK);
         }
 
-        // Draw legend label above the line
-        it.printf(graph_x + 5, fixed_rate_y - 16, id(font_small), COLOR_TEXT,
-                 "fixed rate");
+        // Draw legend label above the line, on the right so it stays clear of the
+        // current period marker (on the far left once tomorrow's rates are shown)
+        it.printf(graph_x + graph_width - 5, fixed_rate_y - 16, id(font_small), COLOR_TEXT,
+                 TextAlign::TOP_RIGHT, "fixed rate");
+      }
+
+      // STEP 3c: Mark midnight with a thicker line and the new day's name
+      for (int index = 1; index < total_bars; index++) {
+        ESPTime local = ESPTime::from_epoch_local(window_start + (time_t)index * slot_seconds);
+        if (local.hour != 0 || local.minute != 0) continue;
+
+        int x_pos = graph_x + graph_width * index / total_bars;
+        it.filled_rectangle(x_pos - 1, graph_y, 3, graph_height, COLOR_BLACK);
+
+        char day_name[4];
+        char day_tag[16];
+        local.strftime(day_name, sizeof(day_name), "%a");
+        snprintf(day_tag, sizeof(day_tag), "%s %d", day_name, local.day_of_month);
+
+        int tag_x, tag_y, tag_width, tag_height;
+        it.get_text_bounds(x_pos + 6, graph_y + 1, day_tag, id(neuebit_bold_regular),
+                           TextAlign::TOP_LEFT, &tag_x, &tag_y, &tag_width, &tag_height);
+        it.filled_rectangle(x_pos + 2, graph_y, tag_width + 8, tag_height + 2, COLOR_BLACK);
+        it.printf(x_pos + 6, graph_y + 1, id(neuebit_bold_regular), COLOR_WHITE,
+                 TextAlign::TOP_LEFT, "%s", day_tag);
       }
 
       // STEP 4: Draw border and frame
       it.rectangle(graph_x - 1, graph_y - 1, graph_width + 2, graph_height + 2, COLOR_BLACK);
 
       // STEP 5: Add title, current price, and battery
-      it.printf(400, 15, id(font_large), COLOR_TEXT, TextAlign::CENTER,
-               "Octopus Energy Rates - Today");
+      if (showing_next_day) {
+        it.printf(400, 15, id(font_large), COLOR_TEXT, TextAlign::CENTER,
+                 "Octopus Energy Rates - Next %dh", (int)((window_end - window_start) / 3600));
+      } else {
+        it.printf(400, 15, id(font_large), COLOR_TEXT, TextAlign::CENTER,
+                 "Octopus Energy Rates - Today");
+      }
 
       // Show current rate in £/kWh
       it.printf(400, 38, id(neuebit_bold_xlarge), COLOR_TEXT, TextAlign::CENTER,
